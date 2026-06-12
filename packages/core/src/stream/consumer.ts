@@ -1,4 +1,5 @@
 import { createRequire } from "node:module";
+import bs58 from "bs58";
 import type {
   ClientDuplexStream,
   SubscribeRequest,
@@ -26,11 +27,14 @@ import type {
   SlotEvent,
   StreamEvent,
   StreamHealth,
+  TransactionEvent,
 } from "./events.js";
 
 export interface ConsumerOptions {
   endpoint: string;
   xToken?: string;
+  /** Subscribe to this wallet's transactions (incl. failed, excl. votes). */
+  walletAddress?: string;
   queueCapacity?: number;
   pingIntervalMs?: number;
   /** Watchdog backoff cap for full resubscribes after client-level retries die. */
@@ -41,6 +45,7 @@ export interface ConsumerOptions {
 interface Handlers {
   onSlot?: (event: SlotEvent) => void | Promise<void>;
   onBlockMeta?: (event: BlockMetaEvent) => void | Promise<void>;
+  onTransaction?: (event: TransactionEvent) => void | Promise<void>;
 }
 
 const QUEUE_CAPACITY = 10_000;
@@ -160,6 +165,17 @@ export class YellowstoneConsumer {
       lifecycle: { filterByCommitment: false, interslotUpdates: false },
     };
     request.blocksMeta = { lifecycle: {} };
+    if (this.options.walletAddress !== undefined) {
+      request.transactions = {
+        wallet: {
+          vote: false,
+          failed: true, // failed executions are lifecycle evidence, not noise
+          accountInclude: [this.options.walletAddress],
+          accountExclude: [],
+          accountRequired: [],
+        },
+      };
+    }
     request.commitment = CommitmentLevel.PROCESSED;
     if (fromSlot !== undefined) request.fromSlot = String(fromSlot);
     return request;
@@ -288,6 +304,21 @@ export class YellowstoneConsumer {
       return;
     }
 
+    if (update.transaction !== undefined) {
+      const info = update.transaction.transaction;
+      if (info === undefined) return;
+      const event: TransactionEvent = {
+        type: "transaction",
+        signature: bs58.encode(info.signature),
+        slot: Number(update.transaction.slot),
+        hasExecutionError: info.meta?.err !== undefined,
+        receivedAt: Date.now(),
+      };
+      // No collapse key: our own wallet's evidence is never superseded/dropped.
+      this.queue.push(event);
+      return;
+    }
+
     if (update.blockMeta !== undefined) {
       const meta = update.blockMeta;
       const event: BlockMetaEvent = {
@@ -345,6 +376,7 @@ export class YellowstoneConsumer {
       }
       try {
         if (event.type === "slot") await this.handlers.onSlot?.(event);
+        else if (event.type === "transaction") await this.handlers.onTransaction?.(event);
         else await this.handlers.onBlockMeta?.(event);
       } catch (error) {
         this.log(`handler error (${event.type}): ${String(error)}`);

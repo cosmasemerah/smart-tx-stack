@@ -13,7 +13,8 @@
   },
   "dependencies": {
     "@solana/web3.js": "^1.95.0",
-    "@triton-one/yellowstone-grpc": "^5.0.9"
+    "@triton-one/yellowstone-grpc": "^5.0.9",
+    "bs58": "^6.0.0"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",

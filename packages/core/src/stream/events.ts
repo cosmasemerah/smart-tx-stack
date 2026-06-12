@@ -18,7 +18,21 @@ export interface BlockMetaEvent {
   receivedAt: number;
 }
 
-export type StreamEvent = SlotEvent | BlockMetaEvent;
+export interface TransactionEvent {
+  type: "transaction";
+  /** base58 signature */
+  signature: string;
+  slot: number;
+  /**
+   * Present when the transaction landed but failed execution. The geyser
+   * proto carries the error as bincode bytes — presence is the signal here;
+   * full classification context comes from the submission record.
+   */
+  hasExecutionError: boolean;
+  receivedAt: number;
+}
+
+export type StreamEvent = SlotEvent | BlockMetaEvent | TransactionEvent;
 
 export interface StreamHealth {
   connectedAt?: number;
