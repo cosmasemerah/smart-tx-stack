@@ -45,11 +45,16 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   return config;
 }
 
-/** Load .env into process.env if present (native Node, no dependency). */
-export function loadDotEnv(path = ".env"): void {
-  try {
-    process.loadEnvFile(path);
-  } catch {
-    // .env is optional — env vars may come from the shell
+/** Load .env into process.env if present (native Node, no dependency).
+ * Tries the cwd first, then the workspace root — package scripts run with
+ * cwd=packages/<name> while the single .env lives at the repo root. */
+export function loadDotEnv(paths: string[] = [".env", "../../.env"]): void {
+  for (const path of paths) {
+    try {
+      process.loadEnvFile(path);
+      return;
+    } catch {
+      // try the next location; .env is optional (shell env also works)
+    }
   }
 }

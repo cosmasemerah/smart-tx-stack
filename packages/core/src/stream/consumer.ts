@@ -182,7 +182,13 @@ export class YellowstoneConsumer {
   }
 
   private async connectAndSubscribe(fromSlot: number | undefined): Promise<void> {
-    this.client = new Client(this.options.endpoint, this.options.xToken, undefined, {
+    // Providers quote bare host:port (SolInfra quickstart does), but the v5
+    // NAPI transport needs an explicit scheme to negotiate TLS — default to
+    // https; plaintext is opt-in by writing http:// in the env.
+    const endpoint = /^[a-z][a-z0-9+.-]*:\/\//i.test(this.options.endpoint)
+      ? this.options.endpoint
+      : `https://${this.options.endpoint}`;
+    this.client = new Client(endpoint, this.options.xToken, undefined, {
       enabled: true,
       backoff: { initialIntervalMs: 500, multiplier: 2, maxRetries: 10 },
     });
