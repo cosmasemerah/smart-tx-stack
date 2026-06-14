@@ -19,7 +19,7 @@ Built for the Superteam Nigeria *Advanced Infrastructure Challenge*. Runs on **m
 | Dynamic tips from live tip-floor data — **no hardcoded values** | [`packages/core/src/tips/`](./packages/core/src/tips/) |
 | Lifecycle tracking: Submitted/Processed/Confirmed/Finalized, timestamps, slots, latency deltas | [`packages/core/src/lifecycle/`](./packages/core/src/lifecycle/) |
 | Detect & classify 4 failure classes (expired blockhash, fee too low, compute exceeded, bundle failure) | [`tracker.ts`](./packages/core/src/lifecycle/tracker.ts) |
-| Landing confirmed via stream subscriptions (not RPC-poll-only) | [`tracker.ts`](./packages/core/src/lifecycle/tracker.ts) + [`bundle-confirmer.ts`](./packages/core/src/jito/bundle-confirmer.ts) |
+| Landing tracked from the Yellowstone **stream** (commitment + blockhash-expiry) + Jito `getBundleStatuses` for the landing slot — **hybrid**, see [Confirmation](#architecture) | [`tracker.ts`](./packages/core/src/lifecycle/tracker.ts) + [`bundle-confirmer.ts`](./packages/core/src/jito/bundle-confirmer.ts) |
 | Automatic retries incl. blockhash refresh — **decided by the AI agent** | [`packages/agent/`](./packages/agent/) |
 | Deterministic fault injection (stale blockhash, CU-starved) | [`packages/agent/src/capture/fault-injection.ts`](./packages/agent/src/capture/fault-injection.ts) |
 
@@ -67,6 +67,8 @@ Three layers, dependencies pointing one way — `capture → agent → core` —
 
 **Confirmation is hybrid.** Our stream provider (SolInfra Ace) does not surface our own wallet's transactions on Yellowstone (a genuine account-indexing limit on the tier — concurrency and token format were both ruled out). So landing detection uses Jito's purpose-built `getBundleStatuses` (300-slot lookback, reliable) for the **landing slot**, and the Yellowstone **slot stream** drives commitment progression (confirmed → finalized) and blockhash-expiry detection. The tracker exposes the same `onTransactionSeen` entry point a pure transaction-stream would call, so swapping to tx-stream confirmation is a one-line change if a provider streams our wallet. (`getInflightBundleStatuses` is treated as advisory only — we observed it report `Invalid` for bundles that in fact landed.)
 
+**Honest tradeoff (bounty req 2.8).** In the captured run the *landing slot* therefore comes from a Jito API poll, not a stream `transaction` event — the slot stream confirms commitment progression and expiry, but it is not the landing trigger. This is a provider limitation, not a design preference: point `GRPC_ENDPOINT` at a Yellowstone provider that streams the wallet's own transactions and landing flips to the pure-stream path (`confirmationMode: "stream-transaction"`, already implemented and unit-tested) with no other code change.
+
 Design rationale lives in the ADR (`decisions/adr-smart-tx-stack-*.md`): mainnet, TypeScript, raw-JSON-RPC Jito, single-tx bundles (tip in the same tx as the action — the uncle-bandit mitigation), integer lamports, AI Option 4 (autonomous retry), one concurrent gRPC connection.
 
 ---
@@ -104,7 +106,7 @@ Two different failures, two correctly different decisions, both reasoned from re
 
 It measures how long it takes a stake-weighted supermajority (≥⅔) to vote a slot to **optimistic confirmation** after the leader first produced it. It's a live, **fee-independent** gauge of consensus health *at submission time*.
 
-In our run the median processed→confirmed delta was **≈127 ms** (739 slot samples; repeat probes saw 121–134 ms) — comfortably **under one 400 ms slot**, i.e. a healthy, low-latency cluster with no fork or vote-lag pressure. A *widening* delta is the warning sign: it means vote propagation is lagging, slots are being skipped/forked, or the cluster is congested — conditions under which a time-sensitive submission is more likely to miss its window regardless of how much you tip. (We compute this from the slot subscription's own receive timestamps, not from RPC polling.)
+In our run the median processed→confirmed delta was **≈127 ms** (739 slot samples; repeat probes saw 121–134 ms) — comfortably **under one 400 ms slot**, i.e. a healthy, low-latency cluster with no fork or vote-lag pressure. A *widening* delta is the warning sign: it means vote propagation is lagging, slots are being skipped/forked, or the cluster is congested — conditions under which a time-sensitive submission is more likely to miss its window regardless of how much you tip. (We compute this from the slot subscription's own receive timestamps, not from RPC polling — so the per-bundle `processedToConfirmed` field in the lifecycle log is intentionally *null* in hybrid mode: there the "processed" stamp is the bundle-status *detection* time, which can lag the slot's confirmed time, so reporting it per-bundle would be misleading. This slot-stream distribution is the sound source for a network-health signal regardless.)
 
 For contrast, the **confirmed→finalized** delta we measured was **≈12.1 s** median (11.8–13.2 s) — that's the structural ~32-slot rooting gap, *not* a health signal, which is exactly why the two deltas answer different questions.
 
