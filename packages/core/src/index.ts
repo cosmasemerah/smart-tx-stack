@@ -9,4 +9,7 @@ export * from "./money/lamports.js";
 export * from "./stream/bounded-queue.js";
 export * from "./stream/consumer.js";
 export * from "./stream/events.js";
+export * from "./tips/tip-source.js";
+export * from "./tips/tip-strategy.js";
+export * from "./tips/types.js";
 export * from "./wallet/keypair.js";
