@@ -117,32 +117,38 @@ export class LifecycleTracker {
     for (const [signature, record] of this.pending) {
       if (record.processedAt !== undefined) continue; // landed, awaiting commitment
       if (blockHeight > record.input.lastValidBlockHeight) {
-        this.fail(signature, record, this.classify(record, false));
+        this.fail(signature, record, this.classify(record));
       }
-    }
-  }
-
-  /** Supplementary Jito inflight status (never the confirmation source). */
-  onBundleStatus(bundleId: string, status: string): void {
-    for (const [signature, record] of this.pending) {
-      if (record.input.bundleId !== bundleId) continue;
-      record.lastBundleStatus = status;
-      const terminal = status === "Failed" || status === "Invalid";
-      if (terminal && record.processedAt === undefined) {
-        this.fail(signature, record, this.classify(record, true));
-      }
-      return;
     }
   }
 
   /**
-   * Failure decision tree (research §8): the most specific known cause wins.
+   * Supplementary Jito inflight status — recorded for the log and for failure
+   * classification, but NEVER terminal on its own. Jito can report "Invalid"
+   * (bundle left the auction system) while the transaction still lands via the
+   * next leader; we observed exactly that. The authoritative failure signal is
+   * blockhash expiry from the stream (onBlockHeight); landing is the stream's
+   * transaction event. Bundle status only informs the classification once one
+   * of those fires.
+   */
+  onBundleStatus(bundleId: string, status: string): void {
+    for (const record of this.pending.values()) {
+      if (record.input.bundleId === bundleId) {
+        record.lastBundleStatus = status;
+        return;
+      }
+    }
+  }
+
+  /**
+   * Failure decision tree (research §8), evaluated when the blockhash window
+   * expires unlanded — the most specific known cause wins.
    * 1. A recorded simulation compute error → compute_exceeded
    * 2. Tip below the p25 floor captured at submission → fee_too_low
-   * 3. Terminal Jito bundle status before expiry → bundle_failure
+   * 3. A terminal Jito bundle status was seen (Failed/Invalid) → bundle_failure
    * 4. Otherwise the blockhash window itself ran out → expired_blockhash
    */
-  private classify(record: PendingRecord, bundleTerminal: boolean): FailureClass {
+  private classify(record: PendingRecord): FailureClass {
     const { simulationError, tipFloorP25Lamports, tipLamports } = record.input;
     if (simulationError !== undefined && /compute|CUs|budget/i.test(simulationError)) {
       return "compute_exceeded";
@@ -150,7 +156,9 @@ export class LifecycleTracker {
     if (tipFloorP25Lamports !== undefined && tipLamports < tipFloorP25Lamports) {
       return "fee_too_low";
     }
-    if (bundleTerminal) return "bundle_failure";
+    if (record.lastBundleStatus === "Failed" || record.lastBundleStatus === "Invalid") {
+      return "bundle_failure";
+    }
     return "expired_blockhash";
   }
 

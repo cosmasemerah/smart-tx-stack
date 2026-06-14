@@ -10,7 +10,9 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
     "soak": "tsx src/bin/soak.ts",
-    "transfer-gate": "tsx src/bin/transfer-gate.ts"
+    "transfer-gate": "tsx src/bin/transfer-gate.ts",
+    "bundle-gate": "tsx src/bin/bundle-gate.ts",
+    "capability-probe": "tsx src/bin/capability-probe.ts"
   },
   "dependencies": {
     "@solana/web3.js": "^1.95.0",

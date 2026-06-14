@@ -86,18 +86,33 @@ describe("LifecycleTracker", () => {
     expect(records[0]!.injectionType).toBe("cu-starved");
   });
 
-  it("classifies fee_too_low ahead of bundle_failure when tip is below p25", () => {
+  it("does not fail on bundle status alone — the tx may still land", () => {
+    const { records, tracker } = harness();
+    tracker.trackSubmission(makeInput(), 1_000);
+    tracker.onBundleStatus("bundle-1", "Invalid");
+    expect(records).toHaveLength(0); // not terminal — stream is authoritative
+    // a landing event still wins after an 'Invalid' bundle status
+    tracker.onTransactionSeen("sig-1", 500, 1_400);
+    tracker.onSlotStatus(500, "confirmed", 2_000);
+    tracker.onSlotStatus(500, "finalized", 8_000);
+    expect(records[0]!.status).toBe("landed");
+    expect(records[0]!.lastBundleStatus).toBe("Invalid");
+  });
+
+  it("classifies fee_too_low ahead of bundle_failure at expiry when tip < p25", () => {
     const { records, tracker } = harness();
     tracker.trackSubmission(makeInput({ tipLamports: 1_000n }), 1_000);
     tracker.onBundleStatus("bundle-1", "Invalid");
+    tracker.onBlockHeight(1_001); // expiry is the terminal trigger
     expect(records[0]!.failureClass).toBe("fee_too_low");
     expect(records[0]!.lastBundleStatus).toBe("Invalid");
   });
 
-  it("classifies bundle_failure on terminal Jito status with an adequate tip", () => {
+  it("classifies bundle_failure at expiry when a terminal status was seen", () => {
     const { records, tracker } = harness();
     tracker.trackSubmission(makeInput(), 1_000);
     tracker.onBundleStatus("bundle-1", "Failed");
+    tracker.onBlockHeight(1_001);
     expect(records[0]!.failureClass).toBe("bundle_failure");
   });
 
@@ -117,6 +132,7 @@ describe("LifecycleTracker", () => {
       1_000,
     );
     tracker.onBundleStatus("bundle-1", "Failed");
+    tracker.onBlockHeight(1_001); // expiry triggers the terminal record
     expect(records[0]!.retryOf).toBe("bundle-0");
     expect(records[0]!.agentDecisionId).toBe("dec-7");
   });

@@ -43,7 +43,7 @@ const tracker = new LifecycleTracker((record) => {
 const consumer = new YellowstoneConsumer({
   endpoint: config.grpcEndpoint,
   xToken: config.grpcXToken,
-  walletAddress: wallet,
+  watchAccounts: [wallet],
   log,
 });
 consumer.on({

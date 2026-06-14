@@ -33,8 +33,15 @@ import type {
 export interface ConsumerOptions {
   endpoint: string;
   xToken?: string;
-  /** Subscribe to this wallet's transactions (incl. failed, excl. votes). */
-  walletAddress?: string;
+  /** Transactions mentioning any of these accounts (incl. failed, excl. votes). */
+  watchAccounts?: string[];
+  /**
+   * When set, only transactions whose signature passes are enqueued. Lets us
+   * subscribe to a busy account (e.g. a Jito tip account, which the provider
+   * does deliver) and keep only our own bundle's tx — the firehose is filtered
+   * at ingestion so the queue never fills with other people's transactions.
+   */
+  transactionFilter?: (signature: string) => boolean;
   queueCapacity?: number;
   pingIntervalMs?: number;
   /** Watchdog backoff cap for full resubscribes after client-level retries die. */
@@ -165,12 +172,12 @@ export class YellowstoneConsumer {
       lifecycle: { filterByCommitment: false, interslotUpdates: false },
     };
     request.blocksMeta = { lifecycle: {} };
-    if (this.options.walletAddress !== undefined) {
+    if (this.options.watchAccounts !== undefined && this.options.watchAccounts.length > 0) {
       request.transactions = {
-        wallet: {
+        watched: {
           vote: false,
           failed: true, // failed executions are lifecycle evidence, not noise
-          accountInclude: [this.options.walletAddress],
+          accountInclude: this.options.watchAccounts,
           accountExclude: [],
           accountRequired: [],
         },
@@ -313,14 +320,20 @@ export class YellowstoneConsumer {
     if (update.transaction !== undefined) {
       const info = update.transaction.transaction;
       if (info === undefined) return;
+      const signature = bs58.encode(info.signature);
+      // Filter the firehose at ingestion — when watching a busy account, keep
+      // only the signatures we care about so the queue never fills with noise.
+      if (this.options.transactionFilter !== undefined && !this.options.transactionFilter(signature)) {
+        return;
+      }
       const event: TransactionEvent = {
         type: "transaction",
-        signature: bs58.encode(info.signature),
+        signature,
         slot: Number(update.transaction.slot),
         hasExecutionError: info.meta?.err !== undefined,
         receivedAt: Date.now(),
       };
-      // No collapse key: our own wallet's evidence is never superseded/dropped.
+      // No collapse key: our own evidence is never superseded/dropped.
       this.queue.push(event);
       return;
     }
