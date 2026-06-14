@@ -29,6 +29,10 @@ Built for the Superteam Nigeria *Advanced Infrastructure Challenge*. Runs on **m
 
 ## Architecture
 
+![Architecture — landing a bundle and recovering when it doesn't](docs/diagrams/architecture.png)
+
+*A failed bundle isn't a dead end: it crosses one typed boundary to a reasoning agent that changes the right variable and loops back, or correctly refuses — every decision on the record. ([Excalidraw source](docs/diagrams/architecture.excalidraw).)*
+
 Three layers, dependencies pointing one way — `capture → agent → core` — so the AI never touches web3.js, Jito, or the stream directly. That boundary is the bounty's *"clean separation between the AI layer and the core stack"*, and it's a single typed interface:
 
 ```
