@@ -239,6 +239,7 @@ export class LifecycleTracker {
       confirmationMode: input.confirmationMode ?? "stream-transaction",
       hadExecutionError: record.hadExecutionError,
       lastBundleStatus: record.lastBundleStatus,
+      simulationError: input.simulationError,
       injected: input.injected ?? false,
       injectionType: input.injectionType,
       retryOf: input.retryOf,

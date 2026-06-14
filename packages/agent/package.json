@@ -9,11 +9,13 @@
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
-    "smoke": "tsx src/bin/agent-smoke.ts"
+    "smoke": "tsx src/bin/agent-smoke.ts",
+    "capture": "tsx src/bin/capture.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.104.1",
-    "@smart-tx-stack/core": "workspace:*"
+    "@smart-tx-stack/core": "workspace:*",
+    "@solana/web3.js": "^1.95.0"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",

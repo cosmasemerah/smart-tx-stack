@@ -67,6 +67,9 @@ export interface LifecycleRecord {
   confirmationMode: "stream-transaction" | "hybrid-bundle-status";
   hadExecutionError?: boolean;
   lastBundleStatus?: string;
+  /** Preflight simulation error recorded at submission — the evidence behind a
+   * compute_exceeded classification (e.g. the CU-starved fault injection). */
+  simulationError?: string;
   injected: boolean;
   injectionType?: string;
   retryOf?: string;
