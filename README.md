@@ -4,7 +4,7 @@ A Solana **smart transaction stack**: stream live slot/leader data over Yellowst
 
 Built for the Superteam Nigeria *Advanced Infrastructure Challenge*. Runs on **mainnet** (Jito has no devnet endpoints), so every landed slot is verifiable on a public explorer.
 
-> **Architecture doc (separate, public):** _Notion link — see submission._
+> **Architecture doc (separate, public):** the [Architecture](#architecture) section below is the full write-up (also mirrored to a public Notion page linked in the Superteam submission).
 > **Live capture evidence:** [`docs/evidence/capture/`](./docs/evidence/capture/) — 11 real submissions, 9 landed, 2 induced failures, agent-driven recovery. Raw artifacts: [`lifecycle-log.jsonl`](./docs/evidence/capture/lifecycle-log.jsonl) · [`agent-decisions.jsonl`](./docs/evidence/capture/agent-decisions.jsonl).
 
 ---
