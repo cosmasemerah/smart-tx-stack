@@ -28,6 +28,14 @@ export interface SubmissionInput {
   injectionType?: string;
   retryOf?: string;
   agentDecisionId?: string;
+  /**
+   * How landing is detected. "stream-transaction" = the wallet's tx event off
+   * the Yellowstone stream (true processed timestamp). "hybrid-bundle-status" =
+   * getBundleStatuses landing slot + slot-stream commitment (processed
+   * timestamp is detection-time and may lag confirmed — see README). Defaults
+   * to stream-transaction.
+   */
+  confirmationMode?: "stream-transaction" | "hybrid-bundle-status";
 }
 
 /** One JSONL line in lifecycle-log.jsonl — the bounty's judged artifact. */
@@ -56,6 +64,7 @@ export interface LifecycleRecord {
   };
   status: "landed" | "failed";
   failureClass?: FailureClass;
+  confirmationMode: "stream-transaction" | "hybrid-bundle-status";
   hadExecutionError?: boolean;
   lastBundleStatus?: string;
   injected: boolean;

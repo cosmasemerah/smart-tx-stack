@@ -207,6 +207,11 @@ export class LifecycleTracker {
     const { input } = record;
     const iso = (ms: number | undefined): string | undefined =>
       ms === undefined ? undefined : new Date(ms).toISOString();
+    // In hybrid mode the "processed" timestamp is getBundleStatuses detection
+    // time, which can lag the slot stream's confirmed time — a negative delta
+    // is meaningless, so report it as undefined rather than a bogus number.
+    const delta = (from: number | undefined, to: number | undefined): number | undefined =>
+      from !== undefined && to !== undefined && to - from >= 0 ? to - from : undefined;
     return {
       schemaVersion: 1,
       bundleId: input.bundleId,
@@ -225,19 +230,13 @@ export class LifecycleTracker {
       finalizedAt: iso(record.finalizedAt),
       finalizedSlot: record.finalizedSlot,
       deltasMs: {
-        submitToProcessed:
-          record.processedAt !== undefined ? record.processedAt - record.submittedAt : undefined,
-        processedToConfirmed:
-          record.processedAt !== undefined && record.confirmedAt !== undefined
-            ? record.confirmedAt - record.processedAt
-            : undefined,
-        confirmedToFinalized:
-          record.confirmedAt !== undefined && record.finalizedAt !== undefined
-            ? record.finalizedAt - record.confirmedAt
-            : undefined,
+        submitToProcessed: delta(record.submittedAt, record.processedAt),
+        processedToConfirmed: delta(record.processedAt, record.confirmedAt),
+        confirmedToFinalized: delta(record.confirmedAt, record.finalizedAt),
       },
       status,
       failureClass,
+      confirmationMode: input.confirmationMode ?? "stream-transaction",
       hadExecutionError: record.hadExecutionError,
       lastBundleStatus: record.lastBundleStatus,
       injected: input.injected ?? false,

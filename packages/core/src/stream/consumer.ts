@@ -112,6 +112,7 @@ export class YellowstoneConsumer {
   private pingTimer: NodeJS.Timeout | undefined;
   private pingId = 0;
   private reconnectAttempt = 0;
+  private reconnecting = false;
   private lastHealthyAt = 0;
   private seenStatuses = new Map<number, Set<SlotCommitment>>();
   private lastProcessedSlot: number | undefined;
@@ -141,11 +142,23 @@ export class YellowstoneConsumer {
 
   async stop(): Promise<void> {
     this.stopping = true;
-    if (this.pingTimer !== undefined) clearInterval(this.pingTimer);
-    this.stream?.removeAllListeners();
-    this.stream?.destroy();
+    this.teardownStream();
     this.queue.close();
     await this.dispatchDone;
+  }
+
+  /** Fully tear down the current stream + ping timer so no connection lingers
+   * when we open the next one — the single-concurrent-connection invariant. */
+  private teardownStream(): void {
+    if (this.pingTimer !== undefined) {
+      clearInterval(this.pingTimer);
+      this.pingTimer = undefined;
+    }
+    if (this.stream !== undefined) {
+      this.stream.removeAllListeners();
+      this.stream.destroy();
+      this.stream = undefined;
+    }
   }
 
   getHealth(): StreamHealth {
@@ -195,10 +208,12 @@ export class YellowstoneConsumer {
     const endpoint = /^[a-z][a-z0-9+.-]*:\/\//i.test(this.options.endpoint)
       ? this.options.endpoint
       : `https://${this.options.endpoint}`;
-    this.client = new Client(endpoint, this.options.xToken, undefined, {
-      enabled: true,
-      backoff: { initialIntervalMs: 500, multiplier: 2, maxRetries: 10 },
-    });
+    // Single concurrent connection (SolInfra Ace = 1 stream). We own
+    // reconnection via the watchdog below, so the client's BUILT-IN reconnect
+    // is left disabled — enabling both would race two channels against the
+    // 1-stream cap. Tear down any prior stream before opening this one.
+    this.teardownStream();
+    this.client = new Client(endpoint, this.options.xToken, undefined);
     await this.client.connect();
 
     let stream: ClientDuplexStream;
@@ -233,10 +248,9 @@ export class YellowstoneConsumer {
   private attachStreamHandlers(stream: ClientDuplexStream): void {
     stream.on("data", (update: SubscribeUpdate) => this.handleUpdate(update));
     const onTerminated = (cause: string) => (error?: Error) => {
-      stream.removeAllListeners();
-      if (this.pingTimer !== undefined) clearInterval(this.pingTimer);
       if (this.stopping) return;
       this.log(`stream ${cause}${error ? `: ${error.message}` : ""}`);
+      // The `reconnecting` guard collapses error+close+end into one reconnect.
       void this.reconnectWithBackoff();
     };
     stream.on("error", onTerminated("error"));
@@ -244,24 +258,40 @@ export class YellowstoneConsumer {
     stream.on("end", onTerminated("end"));
   }
 
+  /**
+   * Single-flight reconnect. The guard ensures only ONE reconnect runs at a
+   * time, so error+close+end (which all fire on a dead stream) can never spin
+   * up multiple Clients — that would put two channels on the wire against the
+   * 1-concurrent-stream cap. Each attempt tears down the old stream first and
+   * resumes from the last processed slot.
+   */
   private async reconnectWithBackoff(): Promise<void> {
-    // Reset the attempt counter after a sustained healthy period.
-    if (Date.now() - this.lastHealthyAt > 60_000) this.reconnectAttempt = 0;
-    const cap = this.options.maxReconnectDelayMs ?? 30_000;
-    const base = Math.min(1000 * 2 ** this.reconnectAttempt, cap);
-    const delay = base / 2 + Math.random() * (base / 2);
-    this.reconnectAttempt += 1;
-    this.health.reconnects += 1;
-    this.log(
-      `watchdog reconnect #${this.health.reconnects} in ${Math.round(delay)}ms (fromSlot=${this.lastProcessedSlot ?? "live"})`,
-    );
-    await new Promise((resolve) => setTimeout(resolve, delay));
-    if (this.stopping) return;
+    if (this.reconnecting || this.stopping) return;
+    this.reconnecting = true;
     try {
-      await this.connectAndSubscribe(this.lastProcessedSlot);
-    } catch (error) {
-      this.log(`reconnect failed: ${String(error)}`);
-      if (!this.stopping) void this.reconnectWithBackoff();
+      if (Date.now() - this.lastHealthyAt > 60_000) this.reconnectAttempt = 0;
+      while (!this.stopping) {
+        this.teardownStream();
+        const cap = this.options.maxReconnectDelayMs ?? 30_000;
+        const base = Math.min(1000 * 2 ** this.reconnectAttempt, cap);
+        const delay = base / 2 + Math.random() * (base / 2);
+        this.reconnectAttempt += 1;
+        this.health.reconnects += 1;
+        this.log(
+          `watchdog reconnect #${this.health.reconnects} in ${Math.round(delay)}ms (fromSlot=${this.lastProcessedSlot ?? "live"})`,
+        );
+        await new Promise((resolve) => setTimeout(resolve, delay));
+        if (this.stopping) break;
+        try {
+          await this.connectAndSubscribe(this.lastProcessedSlot);
+          return; // success — new stream's handlers will re-trigger if it dies
+        } catch (error) {
+          this.log(`reconnect failed: ${String(error)}`);
+          // loop and retry with the next backoff step
+        }
+      }
+    } finally {
+      this.reconnecting = false;
     }
   }
 
