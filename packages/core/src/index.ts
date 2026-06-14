@@ -1,4 +1,5 @@
 export * from "./config.js";
+export * from "./jito/bundle-builder.js";
 export * from "./jito/client.js";
 export * from "./leader/jito-registry.js";
 export * from "./leader/schedule.js";
