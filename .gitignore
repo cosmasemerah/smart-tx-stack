@@ -11,3 +11,13 @@ keys/
 logs/
 
 .DS_Store
+
+# vendored third-party reference docs — kept locally, not published (IP + clutter)
+docs/TritonOne/
+docs/yellowstone-grpc/
+docs/exampleclient.ts
+docs/Complete 2026 Guide to Solana Streaming and Yellowstone gRPC.md
+docs/README.md
+
+# internal ops note (personal account details — not for the public repo)
+docs/solinfra-support-request.md

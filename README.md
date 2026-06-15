@@ -175,8 +175,8 @@ packages/
   agent/    # AI retry agent (tools, tool loop, decision log) behind StackControlSurface;
             # capture/ orchestrator (the live surface impl) + fault injection + capture bin
 docs/
-  evidence/capture/   # the judged lifecycle-log.jsonl + agent-decisions.jsonl + summary
-  TritonOne/, yellowstone-grpc/, exampleclient.ts   # Yellowstone ground-truth references
+  evidence/   # judged capture (lifecycle-log + agent-decisions + summary) + Phase-1 stream soak
+  diagrams/   # architecture.excalidraw + rendered PNG
 ```
 
 ## Stack
