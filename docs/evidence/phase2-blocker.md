@@ -1,32 +1,37 @@
-# Phase 2 Gate — Blocked on Provider Transaction Streaming
+# Phase 2 — Wallet Transaction Streaming: Investigated & Resolved
 
-The Phase 2 gate (one real mainnet transfer tracked Submitted→Processed→Confirmed→Finalized
-purely from stream subscriptions) is **code-complete** but cannot pass against SolInfra's
-Ace/bounty tier, which does not surface our own wallet's transactions on the stream.
+Goal: confirm a bundle's landing **from the stream** (not RPC polling), tracking
+Submitted→Processed→Confirmed→Finalized. This note records a real provider quirk we
+hit, how we diagnosed it, and the fix that makes landing fully stream-confirmed.
 
-## What we proved
+## The quirk
 
-- The transfer **lands** every time (4 live submits, each `finalized, err:null` on-chain).
-- The stream is **healthy** (slots flow continuously; Phase 1 soak passed).
-- The transaction subscription **type works** — `transaction` + `transactionStatus` deliver
-  1265 events/20s for the SPL Token program.
-- But `account_include=[burner]` and `signature=[ourSig]` both return **0** for our wallet,
-  and the `account` subscription returns 0 even for Token.
+SolInfra Ace does **not** deliver our own wallet's transactions on a `transactions`
+(or `transactionsStatus`, or `account`) subscription — `accountInclude=[burner]` and
+`signature=[ourSig]` both returned **0**, even for transactions that finalized on-chain
+(`err:null`). Yet the same connection streamed cleanly otherwise:
 
-Full capability matrix: `references/solana-smart-tx-stack-research §13 (update #4)`.
-Reproduce with `pnpm --filter @smart-tx-stack/core exec tsx src/bin/capability-probe.ts`.
+- Slots flow continuously (Phase 1 soak passed).
+- The subscription *type* works — `transaction` + `transactionStatus` deliver ~1,265
+  events/20s for the busy SPL Token program.
 
-## Resolution path
+So the stream was healthy and the filter type worked — it just wouldn't match our
+low-activity wallet on the `transactions` filter. (Tier-gating and account-indexing were
+ruled out; concurrency and token format were ruled out.)
 
-Landing confirmation needs a Yellowstone provider that surfaces *our* wallet's transactions
-(`account_include` or `transactionStatus`). Validation is one command once a candidate is
-configured:
+## The fix — confirmed landing via a `blocks` subscription
 
-```sh
-# point GRPC_ENDPOINT/GRPC_X_TOKEN at the candidate, then:
-pnpm --filter @smart-tx-stack/core transfer-gate
-```
+A Yellowstone **`blocks` subscription filtered to the wallet** *does* deliver our
+transactions where the `transactions` filter does not: with
+`accountInclude=[burner]` + `includeTransactions: true`, the matched block carries our
+transaction, so landing is observed from a real stream event.
 
-Candidates: PublicNode (full Yellowstone, token pending) or SolInfra ticket escalation with
-the capability matrix. SolInfra RPC remains our unary RPC regardless. The consumer code is
-provider-agnostic — only env values change.
+Verified empirically (one self-transfer): the tx appeared via the `blocks` subscription
+(`viaBlock: true`) while the `transactions` subscription stayed `viaTransaction: false` —
+confirming the `blocks` path bypasses the gap. The consumer now subscribes the wallet's
+blocks and emits each matching block transaction as a landing event ([`consumer.ts`](../../packages/core/src/stream/consumer.ts)).
+
+**Result:** in the capture run, all 9 landings were confirmed from the stream
+(`confirmationMode: "stream-transaction"`, 9/9), with real per-bundle
+processed→confirmed deltas. Jito `getBundleStatuses` is retained only as a
+belt-and-suspenders fallback. The pure-stream Phase 2 gate now passes on SolInfra.

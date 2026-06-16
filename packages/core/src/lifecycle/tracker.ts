@@ -15,6 +15,8 @@ interface PendingRecord {
   finalizedSlot?: number;
   hadExecutionError?: boolean;
   lastBundleStatus?: string;
+  /** Which path first observed landing — drives the record's confirmationMode. */
+  landingSource?: "stream-transaction" | "hybrid-bundle-status";
 }
 
 interface SlotStatusCacheEntry {
@@ -64,12 +66,14 @@ export class LifecycleTracker {
     slot: number,
     receivedAt: number,
     hasExecutionError = false,
+    source?: "stream-transaction" | "hybrid-bundle-status",
   ): void {
     const record = this.pending.get(signature);
     if (record === undefined || record.processedAt !== undefined) return;
     record.processedAt = receivedAt;
     record.processedSlot = slot;
     record.hadExecutionError = hasExecutionError;
+    if (source !== undefined) record.landingSource = source;
 
     let sigs = this.signaturesBySlot.get(slot);
     if (sigs === undefined) {
@@ -236,7 +240,7 @@ export class LifecycleTracker {
       },
       status,
       failureClass,
-      confirmationMode: input.confirmationMode ?? "stream-transaction",
+      confirmationMode: record.landingSource ?? input.confirmationMode ?? "stream-transaction",
       hadExecutionError: record.hadExecutionError,
       lastBundleStatus: record.lastBundleStatus,
       simulationError: input.simulationError,

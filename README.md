@@ -19,7 +19,7 @@ Built for the Superteam Nigeria *Advanced Infrastructure Challenge*. Runs on **m
 | Dynamic tips from live tip-floor data — **no hardcoded values** | [`packages/core/src/tips/`](./packages/core/src/tips/) |
 | Lifecycle tracking: Submitted/Processed/Confirmed/Finalized, timestamps, slots, latency deltas | [`packages/core/src/lifecycle/`](./packages/core/src/lifecycle/) |
 | Detect & classify 4 failure classes (expired blockhash, fee too low, compute exceeded, bundle failure) | [`tracker.ts`](./packages/core/src/lifecycle/tracker.ts) |
-| Landing tracked from the Yellowstone **stream** (commitment + blockhash-expiry) + Jito `getBundleStatuses` for the landing slot — **hybrid**, see [Confirmation](#architecture) | [`tracker.ts`](./packages/core/src/lifecycle/tracker.ts) + [`bundle-confirmer.ts`](./packages/core/src/jito/bundle-confirmer.ts) |
+| Landing confirmed from the Yellowstone **stream** — the wallet's tx via a `blocks`-filtered subscription (`getBundleStatuses` kept only as a fallback) | [`consumer.ts`](./packages/core/src/stream/consumer.ts) + [`tracker.ts`](./packages/core/src/lifecycle/tracker.ts) |
 | Automatic retries incl. blockhash refresh — **decided by the AI agent** | [`packages/agent/`](./packages/agent/) |
 | Deterministic fault injection (stale blockhash, CU-starved) | [`packages/agent/src/capture/fault-injection.ts`](./packages/agent/src/capture/fault-injection.ts) |
 
@@ -65,9 +65,7 @@ Three layers, dependencies pointing one way — `capture → agent → core` —
    └──────────────────────────────────────────────────────────────────┘
 ```
 
-**Confirmation is hybrid.** Our stream provider (SolInfra Ace) does not surface our own wallet's transactions on Yellowstone (a genuine account-indexing limit on the tier — concurrency and token format were both ruled out). So landing detection uses Jito's purpose-built `getBundleStatuses` (300-slot lookback, reliable) for the **landing slot**, and the Yellowstone **slot stream** drives commitment progression (confirmed → finalized) and blockhash-expiry detection. The tracker exposes the same `onTransactionSeen` entry point a pure transaction-stream would call, so swapping to tx-stream confirmation is a one-line change if a provider streams our wallet. (`getInflightBundleStatuses` is treated as advisory only — we observed it report `Invalid` for bundles that in fact landed.)
-
-**Honest tradeoff (bounty req 2.8).** In the captured run the *landing slot* therefore comes from a Jito API poll, not a stream `transaction` event — the slot stream confirms commitment progression and expiry, but it is not the landing trigger. This is a provider limitation, not a design preference: point `GRPC_ENDPOINT` at a Yellowstone provider that streams the wallet's own transactions and landing flips to the pure-stream path (`confirmationMode: "stream-transaction"`, already implemented and unit-tested) with no other code change.
+**Landing is confirmed from the stream.** SolInfra Ace does not deliver our wallet's transactions on a `transactions` subscription — but it *does* deliver them inside a **`blocks` subscription filtered to the wallet** (`accountInclude` + `includeTransactions`). So the consumer subscribes the wallet's blocks, emits each matching block transaction as a landing event, and the tracker marks the bundle landed from that real stream event; the slot stream then drives commitment progression (confirmed → finalized) and blockMeta height drives blockhash-expiry detection. Every landing in the captured run was confirmed this way (`confirmationMode: "stream-transaction"`, 9/9). Jito's `getBundleStatuses` is retained only as a belt-and-suspenders fallback, and `getInflightBundleStatuses` is ignored (we observed it report `Invalid` for bundles that in fact landed). Because the "processed" stamp is a real stream event rather than a poll, the per-bundle `processedToConfirmed` deltas in the lifecycle log are genuine network measurements.
 
 Design rationale lives in the ADR (`decisions/adr-smart-tx-stack-*.md`): mainnet, TypeScript, raw-JSON-RPC Jito, single-tx bundles (tip in the same tx as the action — the uncle-bandit mitigation), integer lamports, AI Option 4 (autonomous retry), one concurrent gRPC connection.
 
@@ -79,8 +77,8 @@ When a bundle fails, the agent — not a hardcoded policy — decides what to ch
 
 From the live capture run:
 
-- **Expired blockhash** → the agent read the live tip floor, noted the failed tip (43,604 lamports) was *already above p75*, concluded **"fee was never the problem"**, refreshed the blockhash, and resubmitted into a confirmed Jito window — **landed** (slot `426461546`).
-- **Compute exceeded** → the agent reasoned that *"neither a higher tip nor a fresh blockhash adds compute units, so any resubmission would fail identically"* and **aborted** rather than burn attempts on a futile retry — the fix is an upstream CU-limit change, which a retry can't make.
+- **Expired blockhash** → the agent read the live tip floor, noted the failed tip (39,958 lamports) *sat between p75 (11,931) and p95 (82,000)* — above the contested range — and concluded the bundle had simply **"aged out before landing,"** not been underpriced; it refreshed the blockhash and resubmitted into a confirmed Jito window — **landed** (slot `426870503`).
+- **Compute exceeded** → the agent identified the `cuLimit` of 200 as the deterministic cause and reasoned that *"neither a higher tip nor a fresh blockhash adds compute units"*, so it **aborted** rather than burn attempts on a futile retry — the fix is an upstream CU-limit change, which a retry can't make.
 
 Two different failures, two correctly different decisions, both reasoned from real data.
 
@@ -94,9 +92,10 @@ Two different failures, two correctly different decisions, both reasoned from re
 |---|---|
 | ≥10 real submissions | **11** |
 | ≥2 failures | **2** (both deterministically induced) |
-| ≥1 blockhash-expiry detected → reasoned → re-landed by the agent | **yes** (slot `426461546`) |
+| ≥1 blockhash-expiry detected → reasoned → re-landed by the agent | **yes** (slot `426870503`) |
 | every retry cross-links to an agent decision (0 fallback retries) | **yes** |
-| landed bundles have explorer-verifiable slots | **9 landed** (`426461032`–`426461546`) |
+| landing confirmed via the stream, not RPC polling | **yes — 9/9 `stream-transaction`** |
+| landed bundles have explorer-verifiable slots | **9 landed** (`426869997`–`426870503`) |
 
 ---
 
@@ -106,13 +105,13 @@ Two different failures, two correctly different decisions, both reasoned from re
 
 It measures how long it takes a stake-weighted supermajority (≥⅔) to vote a slot to **optimistic confirmation** after the leader first produced it. It's a live, **fee-independent** gauge of consensus health *at submission time*.
 
-In our run the median processed→confirmed delta was **≈127 ms** (739 slot samples; repeat probes saw 121–134 ms) — comfortably **under one 400 ms slot**, i.e. a healthy, low-latency cluster with no fork or vote-lag pressure. A *widening* delta is the warning sign: it means vote propagation is lagging, slots are being skipped/forked, or the cluster is congested — conditions under which a time-sensitive submission is more likely to miss its window regardless of how much you tip. (We compute this from the slot subscription's own receive timestamps, not from RPC polling — so the per-bundle `processedToConfirmed` field in the lifecycle log is intentionally *null* in hybrid mode: there the "processed" stamp is the bundle-status *detection* time, which can lag the slot's confirmed time, so reporting it per-bundle would be misleading. This slot-stream distribution is the sound source for a network-health signal regardless.)
+In our run the per-bundle processed→confirmed delta had a **median of ≈88 ms** (a slot-level sampler over the whole run put p50 ≈136 ms) — comfortably **under one 400 ms slot**, i.e. a healthy, low-latency cluster with no fork or vote-lag pressure. A *widening* delta is the warning sign: it means vote propagation is lagging, slots are being skipped/forked, or the cluster is congested — conditions under which a time-sensitive submission is more likely to miss its window regardless of how much you tip. Because landing is confirmed from the stream rather than a poll, each bundle's "processed" timestamp is a real stream event, so these per-bundle deltas appear directly in the lifecycle log.
 
-For contrast, the **confirmed→finalized** delta we measured was **≈12.1 s** median (11.8–13.2 s) — that's the structural ~32-slot rooting gap, *not* a health signal, which is exactly why the two deltas answer different questions.
+For contrast, the **confirmed→finalized** delta we measured was **≈12.2 s** median — that's the structural ~32-slot rooting gap, *not* a health signal, which is exactly why the two deltas answer different questions.
 
 ### 2. Why should you never fetch a blockhash at the *finalized* commitment for a time-sensitive transaction?
 
-A blockhash is only valid for **150 blocks (~60–90 s)**. A *finalized* blockhash is already **≥32 slots (~12 s — we measured 12.1 s)** behind the chain tip, so you spend ~20–25 % of the validity window before you've even signed, pushing you toward an expired-blockhash failure for no benefit.
+A blockhash is only valid for **150 blocks (~60–90 s)**. A *finalized* blockhash is already **≥32 slots (~12 s — we measured 12.2 s)** behind the chain tip, so you spend ~20–25 % of the validity window before you've even signed, pushing you toward an expired-blockhash failure for no benefit.
 
 And there's no upside to pay for: a `confirmed` block reverting would require a slashing-grade ≥⅓ equivocation, so optimistic confirmation is safe to build on. Fetch at **`confirmed`** — you get the full validity window and negligible rollback risk. Our stale-blockhash fault injection makes the failure concrete: holding a blockhash past its window got the bundle rejected with `-32602 bundle contains an expired blockhash`, and the agent's correct fix was to refresh (at `confirmed`) and resubmit.
 
@@ -120,7 +119,7 @@ And there's no upside to pay for: a `confirmed` block reverting would require a 
 
 The bundle **doesn't land — and no tip is paid.** The tip is a transfer *inside* the atomic bundle, so it only executes if the bundle is included; a skipped slot costs you nothing but the missed opportunity. The bundle stays pending while the blockhash is valid and otherwise resolves Invalid/Failed; our stack detects the non-landing from the stream (no landing slot + block-height passing `lastValidBlockHeight`), never by trusting an inflight status.
 
-Recovery is to **retarget the next *confirmed* Jito leader window** — we verify the upcoming leader against the live `running_jito` validator set (691 validators in our run) rather than assuming "~95 % of stake is Jito" — and resubmit with a recomputed tip. That's precisely the agent's retry loop. Depth nuance: an uncled/skipped slot can leak a bundle's transactions for independent rebroadcast, so bundles shouldn't assume absolute atomicity under uncles — which is also why we keep the tip in the *same* transaction as the action, so a rebroadcast still carries both.
+Recovery is to **retarget the next *confirmed* Jito leader window** — we verify the upcoming leader against the live `running_jito` validator set (~690 validators) rather than assuming "~95 % of stake is Jito" — and resubmit with a recomputed tip. That's precisely the agent's retry loop. Depth nuance: an uncled/skipped slot can leak a bundle's transactions for independent rebroadcast, so bundles shouldn't assume absolute atomicity under uncles — which is also why we keep the tip in the *same* transaction as the action, so a rebroadcast still carries both.
 
 ---
 

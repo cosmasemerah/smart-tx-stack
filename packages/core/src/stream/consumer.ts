@@ -195,6 +195,20 @@ export class YellowstoneConsumer {
           accountRequired: [],
         },
       };
+      // SolInfra Ace does not deliver our wallet's txs on the `transactions`
+      // filter, but DOES inside a `blocks` subscription filtered to the same
+      // accounts (verified empirically): includeTransactions makes the matched
+      // block carry our tx, so landing is confirmed from a real stream event.
+      // The transactions filter above is kept for providers that honor it — the
+      // tracker dedupes by signature, so a double hit is a harmless no-op.
+      request.blocks = {
+        watched: {
+          accountInclude: this.options.watchAccounts,
+          includeTransactions: true,
+          includeAccounts: false,
+          includeEntries: false,
+        },
+      };
     }
     request.commitment = CommitmentLevel.PROCESSED;
     if (fromSlot !== undefined) request.fromSlot = String(fromSlot);
@@ -365,6 +379,33 @@ export class YellowstoneConsumer {
       };
       // No collapse key: our own evidence is never superseded/dropped.
       this.queue.push(event);
+      return;
+    }
+
+    if (update.block !== undefined) {
+      // Wallet-filtered block: extract our matching transactions as landing
+      // evidence (the stream path that actually works on SolInfra — see
+      // buildRequest). Empty blocks (filter matched the slot, no wallet tx) emit
+      // no events, so this never floods the queue.
+      const slot = Number(update.block.slot);
+      for (const tx of update.block.transactions ?? []) {
+        if (tx.isVote) continue;
+        const signature = bs58.encode(tx.signature);
+        if (
+          this.options.transactionFilter !== undefined &&
+          !this.options.transactionFilter(signature)
+        ) {
+          continue;
+        }
+        const txEvent: TransactionEvent = {
+          type: "transaction",
+          signature,
+          slot,
+          hasExecutionError: tx.meta?.err !== undefined,
+          receivedAt: Date.now(),
+        };
+        this.queue.push(txEvent);
+      }
       return;
     }
 

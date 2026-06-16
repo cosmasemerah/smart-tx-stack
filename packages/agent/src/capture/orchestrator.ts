@@ -23,6 +23,7 @@ import type {
   LifecycleRecord,
   SlotEvent,
   TipFloor,
+  TransactionEvent,
 } from "@smart-tx-stack/core";
 import type {
   ResubmitInput,
@@ -41,14 +42,16 @@ import {
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
-/** Tip-strategy bounds (config, not magic numbers): protocol floor + risk cap. */
-const TIP_PROTOCOL_FLOOR = 1_000n;
-const TIP_CEILING = 500_000n;
 const CU_PRICE_MICROLAMPORTS = 10_000n;
-/** Pressure (0..1 across the percentile ladder) for intended-to-land bundles.
- * 0.5 lands exactly on p75 of landed tips — competitive into a confirmed Jito
- * window without overpaying toward the p95 spike (the agent raises it on a miss). */
+/** Pressure (0..1 across the percentile ladder) for the live-derived tip. */
 const HAPPY_PRESSURE = 0.5;
+/** Competitive risk band: the p75-driven tip is clamped into [floor, cap]. The
+ * floor (well above Jito's 1,000-lamport protocol minimum) keeps bundles landing
+ * reliably even when the live tip floor dips into single-digit-k territory; the
+ * cap stops a transient p95/p99 spike from logging an absurd tip. The tip is
+ * still derived entirely from live percentiles — this only risk-bounds it. */
+const TIP_FLOOR = 12_000n;
+const TIP_CEILING = 60_000n;
 
 function isExecutionError(err: unknown): boolean {
   if (err === null || err === undefined) return false;
@@ -201,6 +204,7 @@ export class CaptureOrchestrator {
     this.consumer = new YellowstoneConsumer({
       endpoint: deps.config.grpcEndpoint,
       xToken: deps.config.grpcXToken,
+      watchAccounts: [deps.keypair.publicKey.toBase58()],
       log: this.log,
     });
   }
@@ -214,6 +218,7 @@ export class CaptureOrchestrator {
     this.consumer.on({
       onSlot: (e: SlotEvent) => this.onSlot(e),
       onBlockMeta: (e: BlockMetaEvent) => this.onBlockMeta(e),
+      onTransaction: (e: TransactionEvent) => this.onTransaction(e),
     });
     await this.consumer.start();
     await this.waitForStreamReady(20_000);
@@ -256,6 +261,18 @@ export class CaptureOrchestrator {
     if (e.blockHeight === undefined) return;
     if (e.blockHeight > this.latestBlockHeight) this.latestBlockHeight = e.blockHeight;
     this.tracker.onBlockHeight(e.blockHeight);
+  }
+
+  private onTransaction(e: TransactionEvent): void {
+    // Wallet tx observed on the Yellowstone stream (via the blocks subscription)
+    // — the authoritative landing signal. getBundleStatuses is only a fallback.
+    this.tracker.onTransactionSeen(
+      e.signature,
+      e.slot,
+      e.receivedAt,
+      e.hasExecutionError,
+      "stream-transaction",
+    );
   }
 
   private async waitForStreamReady(timeoutMs: number): Promise<void> {
@@ -358,7 +375,7 @@ export class CaptureOrchestrator {
       cuLimit: bundle.cuLimit,
       tipFloorP25Lamports: p.tipFloorP25,
       simulationError: p.simulationError,
-      confirmationMode: "hybrid-bundle-status",
+      confirmationMode: "stream-transaction",
       leaderWindow: p.leaderWindow,
       injected: p.injected,
       injectionType: p.injectionType,
@@ -374,6 +391,7 @@ export class CaptureOrchestrator {
           landing.slot,
           Date.now(),
           isExecutionError(landing.err),
+          "hybrid-bundle-status",
         );
       });
     }
@@ -543,7 +561,7 @@ export class CaptureOrchestrator {
     );
     const floor = await this.getFloor();
     const tip = computeTip(floor, 0.6, {
-      protocolFloorLamports: TIP_PROTOCOL_FLOOR,
+      protocolFloorLamports: TIP_FLOOR,
       ceilingLamports: TIP_CEILING,
     });
     return this.submitOnce({
@@ -565,7 +583,7 @@ export class CaptureOrchestrator {
     const { blockhash, lastValidBlockHeight } = await this.connection.getLatestBlockhash("confirmed");
     const floor = await this.getFloor();
     const tip = computeTip(floor, 0.6, {
-      protocolFloorLamports: TIP_PROTOCOL_FLOOR,
+      protocolFloorLamports: TIP_FLOOR,
       ceilingLamports: TIP_CEILING,
     });
     // Probe transaction (same starved CU limit) to capture the real runtime error.
@@ -604,7 +622,7 @@ export class CaptureOrchestrator {
   private async submitHappy(index: number): Promise<LifecycleRecord | null> {
     const floor = await this.getFloor();
     const tip = computeTip(floor, HAPPY_PRESSURE, {
-      protocolFloorLamports: TIP_PROTOCOL_FLOOR,
+      protocolFloorLamports: TIP_FLOOR,
       ceilingLamports: TIP_CEILING,
     });
     const window = await findNextJitoLeaderWindow(this.currentSlot, this.schedule, this.registry);
